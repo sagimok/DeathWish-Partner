@@ -314,21 +314,14 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
+      // Log kanalına, kullanıcının gönderdiği partner mesajını OLDUĞU GİBİ (verbatim) ilet.
+      // Embed veya ek alan kullanılmaz — mesaj tam olarak nasılsa öyle atılır.
       const logChannel = await client.channels.fetch(PARTNER_LOG_CHANNEL_ID).catch(() => null);
       if (logChannel) {
-        const logEmbed = new EmbedBuilder()
-          .setTitle('📨 Yeni Partner Başvurusu')
-          .setColor(0x5865f2)
-          .addFields(
-            { name: 'Gönderen Kullanıcı', value: `${message.author.tag}`, inline: true },
-            { name: 'Kullanıcı ID', value: `${message.author.id}`, inline: true },
-            { name: 'Gönderim Tarihi', value: new Date().toLocaleString('tr-TR'), inline: false },
-            { name: 'Partner Mesajı', value: message.content.slice(0, 1024) || '—', inline: false },
-            { name: 'Bulunan Davet Linki', value: inviteLink, inline: false }
-          )
-          .setTimestamp();
-
-        await logChannel.send({ embeds: [logEmbed] });
+        await logChannel.send({
+          content: message.content,
+          allowedMentions: { parse: [] },
+        });
       }
 
       await message.reply('✅ Partner mesajınız başarıyla yetkililere iletildi.');
