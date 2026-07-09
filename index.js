@@ -63,6 +63,19 @@ db.exec(`
     reason TEXT,
     createdAt TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS partner_state (
+    userId TEXT PRIMARY KEY,
+    pending INTEGER NOT NULL DEFAULT 0,
+    lastRequestAt TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS partner_daily_limit (
+    userId TEXT NOT NULL,
+    date TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (userId, date)
+  );
 `);
 
 // Yeni bir kırmızı liste kaydı ekler. Aynı invite varsa günceller.
@@ -94,10 +107,47 @@ function isBlacklisted(invite) {
 }
 
 // ──────────────────────────────────────────────────────────────
-//  SPAM KORUMASI (Bellek içi cooldown takibi)
+//  SPAM KORUMASI (SQLite tabanlı — Map/Set kullanılmaz, bellek sızıntısı olmaz)
 // ──────────────────────────────────────────────────────────────
-// userId -> son partner komutu kullanım zamanı (timestamp, ms)
-const cooldowns = new Map();
+// Günde en fazla kaç partner isteği oluşturulabileceği.
+const DAILY_PARTNER_LIMIT = 4;
+
+// Kullanıcının mevcut partner durumunu (bekleyen istek var mı, son istek zamanı) döner.
+function getPartnerState(userId) {
+  return db.prepare('SELECT * FROM partner_state WHERE userId = ?').get(userId) || null;
+}
+
+// Kullanıcının bekleyen istek durumunu ve son istek zamanını kaydeder/günceller.
+function setPartnerState(userId, pending, lastRequestAt) {
+  db.prepare(
+    `INSERT INTO partner_state (userId, pending, lastRequestAt) VALUES (?, ?, ?)
+     ON CONFLICT(userId) DO UPDATE SET pending = excluded.pending, lastRequestAt = excluded.lastRequestAt`
+  ).run(userId, pending ? 1 : 0, lastRequestAt);
+}
+
+// Kullanıcının bekleyen isteğini kapatır (DM mesajı işlendikten sonra çağrılır).
+function closePendingRequest(userId) {
+  db.prepare('UPDATE partner_state SET pending = 0 WHERE userId = ?').run(userId);
+}
+
+// Bugünün tarihini YYYY-MM-DD formatında döner (günlük limit sıfırlama anahtarı).
+function getTodayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+// Kullanıcının bugün kaç partner isteği oluşturduğunu döner.
+function getDailyRequestCount(userId, dateKey) {
+  const row = db.prepare('SELECT count FROM partner_daily_limit WHERE userId = ? AND date = ?').get(userId, dateKey);
+  return row ? row.count : 0;
+}
+
+// Kullanıcının bugünkü partner istek sayacını 1 artırır (yoksa oluşturur).
+function incrementDailyRequestCount(userId, dateKey) {
+  db.prepare(
+    `INSERT INTO partner_daily_limit (userId, date, count) VALUES (?, ?, 1)
+     ON CONFLICT(userId, date) DO UPDATE SET count = count + 1`
+  ).run(userId, dateKey);
+}
 
 // Kalan bekleme süresini "X dakika Y saniye" formatında döner.
 function formatRemaining(ms) {
@@ -201,16 +251,34 @@ client.on('messageCreate', async (message) => {
       if (!isMentioned || !containsPartnerWord) return;
 
       const userId = message.author.id;
-      const now = Date.now();
-      const lastUsed = cooldowns.get(userId);
+      const state = getPartnerState(userId);
 
-      if (lastUsed && now - lastUsed < COOLDOWN_MS) {
-        const remaining = COOLDOWN_MS - (now - lastUsed);
+      // 1) Zaten bekleyen (henüz DM'den cevap vermediği) bir isteği varsa yenisini açma.
+      if (state && state.pending) {
+        await message.reply('⏳ Zaten aktif bir partner isteğiniz bulunuyor. Lütfen önce DM üzerinden partner mesajınızı gönderin.');
+        return;
+      }
+
+      // 2) Günlük limit kontrolü (SQLite'ta saklanır, bot yeniden başlasa bile sıfırlanmaz).
+      const todayKey = getTodayKey();
+      const dailyCount = getDailyRequestCount(userId, todayKey);
+      if (dailyCount >= DAILY_PARTNER_LIMIT) {
+        await message.reply(`❌ Bugünkü partner hakkınızı kullandınız. Günlük limit: ${DAILY_PARTNER_LIMIT}/${DAILY_PARTNER_LIMIT}.`);
+        return;
+      }
+
+      // 3) 3 dakikalık cooldown kontrolü (mevcut özellik, korunuyor).
+      const now = Date.now();
+      const lastRequestAt = state?.lastRequestAt ? Number(state.lastRequestAt) : null;
+      if (lastRequestAt && now - lastRequestAt < COOLDOWN_MS) {
+        const remaining = COOLDOWN_MS - (now - lastRequestAt);
         await message.reply(`⏳ Tekrar partner başvurusu yapmadan önce **${formatRemaining(remaining)}** beklemelisin.`);
         return;
       }
 
-      cooldowns.set(userId, now);
+      // Tüm kontroller geçildi: isteği "bekleyen" olarak işaretle, cooldown'u güncelle ve günlük sayacı artır.
+      setPartnerState(userId, true, String(now));
+      incrementDailyRequestCount(userId, todayKey);
 
       try {
         await message.author.send(PARTNER_MESSAGE);
@@ -222,6 +290,18 @@ client.on('messageCreate', async (message) => {
 
     // ── DM: Kullanıcının davet linki içeren cevabı ────────────
     if (!message.guild) {
+      const userId = message.author.id;
+      const state = getPartnerState(userId);
+
+      // Bekleyen isteği yoksa (hiç @Bot partner yazmamış ya da hakkını zaten kullanmış) mesajı kabul etme.
+      if (!state || !state.pending) {
+        await message.reply('ℹ️ Şu anda aktif bir partner isteğiniz yok. Yeni istek için sunucuda **@Bot partner** yazmalısınız.');
+        return;
+      }
+
+      // Kullanıcının DM'den gönderebileceği tek mesaj budur — sonuç ne olursa olsun bekleyen istek kapanır.
+      closePendingRequest(userId);
+
       const inviteLink = extractInviteLink(message.content);
 
       if (!inviteLink) {
@@ -250,6 +330,8 @@ client.on('messageCreate', async (message) => {
 
         await logChannel.send({ embeds: [logEmbed] });
       }
+
+      await message.reply('✅ Partner mesajınız başarıyla yetkililere iletildi.');
     }
   } catch (err) {
     console.error('⛔ messageCreate işlenirken hata oluştu:', err);
@@ -333,4 +415,3 @@ process.on('uncaughtException', (err) => {
 //  BOT GİRİŞİ
 // ──────────────────────────────────────────────────────────────
 client.login(TOKEN);
-
