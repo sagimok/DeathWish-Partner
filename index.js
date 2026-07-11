@@ -240,6 +240,22 @@ function getLogChannelId() {
 }
 
 // ──────────────────────────────────────────────────────────────
+//  ROL KONTROL YARDIMCISI
+//  GuildMembers intent olmadığında interaction.member.roles
+//  bir Collection değil düz string[] dizisi olarak gelebilir.
+//  Her iki durumu da destekler.
+// ──────────────────────────────────────────────────────────────
+function memberHasRole(interaction, roleId) {
+  const roles = interaction.member?.roles;
+  if (!roles) return false;
+  // GuildMember.roles → GuildMemberRoleManager (Collection ile .cache.has())
+  if (typeof roles.cache?.has === 'function') return roles.cache.has(roleId);
+  // APIInteractionGuildMember.roles → string[]
+  if (Array.isArray(roles)) return roles.includes(roleId);
+  return false;
+}
+
+// ──────────────────────────────────────────────────────────────
 //  DAVET LİNKİ TESPİTİ
 // ──────────────────────────────────────────────────────────────
 function extractInviteLink(content) {
@@ -420,9 +436,9 @@ client.on('messageCreate', async (message) => {
 // ──────────────────────────────────────────────────────────────
 client.on('interactionCreate', async (interaction) => {
   try {
+    // ── /setup ───────────────────────────────────────────────
     if (interaction.isChatInputCommand() && interaction.commandName === 'setup') {
-      const hasRole = interaction.member?.roles?.cache?.has(SETUP_ROLE_ID);
-      if (!hasRole) {
+      if (!memberHasRole(interaction, SETUP_ROLE_ID)) {
         await interaction.reply({ content: '⛔ Bu komutu kullanmak için gerekli role sahip değilsin.', ephemeral: true });
         return;
       }
@@ -443,6 +459,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
+    // ── Modal: partner mesajı kaydedildi, kanal seçimi ───────
     if (interaction.isModalSubmit() && interaction.customId === 'setup_partner_message_modal') {
       const newMessage = interaction.fields.getTextInputValue('partner_message_input');
       setConfigValue('partner_message', newMessage);
@@ -462,6 +479,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
+    // ── Kanal seçimi tamamlandı ───────────────────────────────
     if (interaction.isChannelSelectMenu() && interaction.customId === 'setup_log_channel_select') {
       const channelId = interaction.values[0];
       setConfigValue('log_channel_id', channelId);
@@ -473,6 +491,7 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
+    // ── /kirmiziliste ─────────────────────────────────────────
     if (!interaction.isChatInputCommand()) return;
     if (interaction.commandName !== 'kirmiziliste') return;
 
