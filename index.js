@@ -209,7 +209,7 @@ function messageMatchesPartnerTrigger(content) {
 const TOKEN = process.env.DISCORD_TOKEN;
 const PORT = process.env.PORT || 3000;
 
-const PARTNER_COMMAND_CHANNEL_ID = '1524140987109081229';
+const PARTNER_COMMAND_CHANNEL_IDS = ['1524140987109081229', '1525062234844303370'];
 const DEFAULT_PARTNER_LOG_CHANNEL_ID = '1524203801689456800';
 const SETUP_ROLE_ID = '1524107651510702160';
 
@@ -384,6 +384,7 @@ client.on('messageCreate', async (message) => {
 
       try {
         await message.author.send(getPartnerMessage());
+        await message.reply(`📩 ${message.author}, sana DM üzerinden partner mesajı gönderdim. Lütfen DM'lerini kontrol et ve davet linkini oradan gönder.`);
       } catch (dmError) {
         await message.reply('DM\'ni açmadan partner sistemini kullanamazsın.');
       }
