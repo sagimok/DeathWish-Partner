@@ -1,12 +1,14 @@
 // ══════════════════════════════════════════════════════════════
 //  DeathWish Partner — Discord.js v14 Partner Botu (TEK DOSYA)
 // ══════════════════════════════════════════════════════════════
-// Bu dosya tamamen bağımsız çalışan tek parça bir bottur.
-// Node.js + discord.js v14 + better-sqlite3 + express kullanır.
+// Node.js + discord.js v14 + node:sqlite + express kullanır.
+// Bu dosya, index.js + db.js + match.js'in birleştirilmiş halidir.
 // ══════════════════════════════════════════════════════════════
 
 require('dotenv').config();
 
+const path = require('node:path');
+const { DatabaseSync } = require('node:sqlite');
 const {
   Client,
   GatewayIntentBits,
@@ -16,45 +18,20 @@ const {
   Routes,
   SlashCommandBuilder,
   PermissionFlagsBits,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  ActionRowBuilder,
+  ChannelSelectMenuBuilder,
+  ChannelType,
 } = require('discord.js');
-const Database = require('better-sqlite3');
 const express = require('express');
 
-// ──────────────────────────────────────────────────────────────
-//  AYARLAR
-// ──────────────────────────────────────────────────────────────
-const TOKEN = process.env.DISCORD_TOKEN;
-const PORT = process.env.PORT || 3000;
-
-// Botun "@Bot partner" komutunu dinleyeceği tek kanal.
-const PARTNER_COMMAND_CHANNEL_ID = '1524140987109081229';
-// Geçerli partner mesajlarının EMBED olarak loglanacağı kanal.
-const PARTNER_LOG_CHANNEL_ID = '1524203801689456800';
-
-// Kullanıcı başına bekleme süresi (3 dakika, milisaniye cinsinden).
-const COOLDOWN_MS = 3 * 60 * 1000;
-
-// Botun DM'de göndereceği sabit partner mesajı. Format birebir korunur.
-const PARTNER_MESSAGE =
-  '˚ ༘✶ Deathwish ϟ\n' +
-  '╭━━━━━━━━━━━━━━━━━━━━━━╮\n' +
-  '✦ ˚⊹ ₊ Eğlenceli ve toxiclikten uzak bir sunucuyuz.\n' +
-  '✦ ˚⊹ ₊ Komik modlar ve aktif olmaya çalışan chat vardır.\n' +
-  '✦ ˚⊹ ₊ Yeni bir sunucudur gelişmeye açık bir sunucudur. Sende aramıza katıl.\n' +
-  '╰━━━━━━━━━━━━━━━━━━━━━━╮\n' +
-  '╰───── ❥ https://discord.gg/XUDVj9R2wE\n' +
-  '╰───── ❥ https://cdn.discordapp.com/attachments/1524203614992863452/1524776756785975386/CC__Lelouch.jfif\n' +
-  '@everyone ♡! @here';
-
-if (!TOKEN) {
-  console.error('⛔ DISCORD_TOKEN bulunamadı! .env dosyasını kontrol et.');
-  process.exit(1);
-}
-
-// ──────────────────────────────────────────────────────────────
-//  VERİTABANI (SQLite — better-sqlite3)
-// ──────────────────────────────────────────────────────────────
-const db = new Database('deathwish-partner.db');
+// ══════════════════════════════════════════════════════════════
+//  VERİTABANI (eskiden db.js) — Node'un yerleşik node:sqlite modülü
+// ══════════════════════════════════════════════════════════════
+const dbPath = path.join(__dirname, 'deathwish-partner.db');
+const db = new DatabaseSync(dbPath);
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS blacklist (
@@ -76,9 +53,14 @@ db.exec(`
     count INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (userId, date)
   );
+
+  CREATE TABLE IF NOT EXISTS bot_config (
+    key TEXT PRIMARY KEY,
+    value TEXT
+  );
 `);
 
-// Yeni bir kırmızı liste kaydı ekler. Aynı invite varsa günceller.
+// ── KIRMIZI LİSTE (blacklist) ──
 function addBlacklist(invite, reason) {
   const createdAt = new Date().toISOString();
   const existing = db.prepare('SELECT id FROM blacklist WHERE invite = ?').get(invite);
@@ -89,59 +71,36 @@ function addBlacklist(invite, reason) {
   db.prepare('INSERT INTO blacklist (invite, reason, createdAt) VALUES (?, ?, ?)').run(invite, reason, createdAt);
   return 'inserted';
 }
-
-// Bir invite'ı kırmızı listeden siler. Silinen kayıt varsa true döner.
 function removeBlacklist(invite) {
   const result = db.prepare('DELETE FROM blacklist WHERE invite = ?').run(invite);
   return result.changes > 0;
 }
-
-// Kırmızı listedeki tüm kayıtları döner.
 function listBlacklist() {
   return db.prepare('SELECT * FROM blacklist ORDER BY createdAt DESC').all();
 }
-
-// Verilen invite linkinin kırmızı listede olup olmadığını kontrol eder.
 function isBlacklisted(invite) {
   return !!db.prepare('SELECT id FROM blacklist WHERE invite = ?').get(invite);
 }
 
-// ──────────────────────────────────────────────────────────────
-//  SPAM KORUMASI (SQLite tabanlı — Map/Set kullanılmaz, bellek sızıntısı olmaz)
-// ──────────────────────────────────────────────────────────────
-// Günde en fazla kaç partner isteği oluşturulabileceği.
-const DAILY_PARTNER_LIMIT = 4;
-
-// Kullanıcının mevcut partner durumunu (bekleyen istek var mı, son istek zamanı) döner.
+// ── PARTNER DURUMU (bekleyen istek / cooldown) ──
 function getPartnerState(userId) {
   return db.prepare('SELECT * FROM partner_state WHERE userId = ?').get(userId) || null;
 }
-
-// Kullanıcının bekleyen istek durumunu ve son istek zamanını kaydeder/günceller.
 function setPartnerState(userId, pending, lastRequestAt) {
   db.prepare(
     `INSERT INTO partner_state (userId, pending, lastRequestAt) VALUES (?, ?, ?)
      ON CONFLICT(userId) DO UPDATE SET pending = excluded.pending, lastRequestAt = excluded.lastRequestAt`
   ).run(userId, pending ? 1 : 0, lastRequestAt);
 }
-
-// Kullanıcının bekleyen isteğini kapatır (DM mesajı işlendikten sonra çağrılır).
 function closePendingRequest(userId) {
   db.prepare('UPDATE partner_state SET pending = 0 WHERE userId = ?').run(userId);
 }
 
-// Bugünün tarihini YYYY-MM-DD formatında döner (günlük limit sıfırlama anahtarı).
-function getTodayKey() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-// Kullanıcının bugün kaç partner isteği oluşturduğunu döner.
+// ── GÜNLÜK LİMİT ──
 function getDailyRequestCount(userId, dateKey) {
   const row = db.prepare('SELECT count FROM partner_daily_limit WHERE userId = ? AND date = ?').get(userId, dateKey);
   return row ? row.count : 0;
 }
-
-// Kullanıcının bugünkü partner istek sayacını 1 artırır (yoksa oluşturur).
 function incrementDailyRequestCount(userId, dateKey) {
   db.prepare(
     `INSERT INTO partner_daily_limit (userId, date, count) VALUES (?, ?, 1)
@@ -149,7 +108,148 @@ function incrementDailyRequestCount(userId, dateKey) {
   ).run(userId, dateKey);
 }
 
-// Kalan bekleme süresini "X dakika Y saniye" formatında döner.
+// ── BOT AYARLARI (/setup ile değiştirilir) ──
+function getConfigValue(key) {
+  const row = db.prepare('SELECT value FROM bot_config WHERE key = ?').get(key);
+  return row ? row.value : null;
+}
+function setConfigValue(key, value) {
+  db.prepare(
+    `INSERT INTO bot_config (key, value) VALUES (?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+  ).run(key, value);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  TETİKLEYİCİ KELİME TESPİTİ (eskiden match.js) — fuzzy eşleşme dahil
+// ══════════════════════════════════════════════════════════════
+// Sadece "partner yetkili" (veya buna çok benzer yazımlar) tetikler —
+// "partner" ya da "yetkili" tek başına yeterli değildir.
+const TRIGGER_PHRASES_RAW = ['partner yetkili'];
+
+function normalize(str) {
+  return str
+    .toLowerCase()
+    .replace(/ı/g, 'i')
+    .replace(/ş/g, 's')
+    .replace(/ğ/g, 'g')
+    .replace(/ü/g, 'u')
+    .replace(/ö/g, 'o')
+    .replace(/ç/g, 'c')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function levenshtein(a, b) {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+
+  let prev = new Array(n + 1);
+  let curr = new Array(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
+
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n];
+}
+
+function maxDistanceFor(length) {
+  if (length <= 4) return 1;
+  if (length <= 8) return 2;
+  return 3;
+}
+
+function fuzzyContains(haystack, needle, maxDistance) {
+  if (!needle) return false;
+  if (haystack.includes(needle)) return true;
+
+  const nLen = needle.length;
+  const minSize = Math.max(1, nLen - 2);
+  const maxSize = nLen + 2;
+
+  for (let size = minSize; size <= maxSize; size++) {
+    for (let i = 0; i + size <= haystack.length; i++) {
+      const window = haystack.substr(i, size);
+      if (levenshtein(window, needle) <= maxDistance) return true;
+    }
+  }
+  return false;
+}
+
+const TRIGGER_PHRASES = TRIGGER_PHRASES_RAW.map((phrase) => {
+  const norm = normalize(phrase);
+  return { norm, compact: norm.replace(/\s+/g, '') };
+});
+
+function messageMatchesPartnerTrigger(content) {
+  if (!content) return false;
+  const norm = normalize(content);
+  if (!norm) return false;
+  const compact = norm.replace(/\s+/g, '');
+
+  for (const { norm: phraseNorm, compact: phraseCompact } of TRIGGER_PHRASES) {
+    if (norm.includes(phraseNorm)) return true;
+    if (fuzzyContains(compact, phraseCompact, maxDistanceFor(phraseCompact.length))) return true;
+  }
+  return false;
+}
+
+// ──────────────────────────────────────────────────────────────
+//  AYARLAR
+// ──────────────────────────────────────────────────────────────
+const TOKEN = process.env.DISCORD_TOKEN;
+const PORT = process.env.PORT || 3000;
+
+const PARTNER_COMMAND_CHANNEL_ID = '1524140987109081229';
+const DEFAULT_PARTNER_LOG_CHANNEL_ID = '1524203801689456800';
+const SETUP_ROLE_ID = '1524107651510702160';
+
+const COOLDOWN_MS = 3 * 60 * 1000;
+const DAILY_PARTNER_LIMIT = 4;
+
+const DEFAULT_PARTNER_MESSAGE =
+  '˚ ༘✶ Deathwish ϟ\n' +
+  '╭━━━━━━━━━━━━━━━━━━━━━━╮\n' +
+  '✦ ˚⊹ ₊ Eğlenceli ve toxiclikten uzak bir sunucuyuz.\n' +
+  '✦ ˚⊹ ₊ Komik modlar ve aktif olmaya çalışan chat vardır.\n' +
+  '✦ ˚⊹ ₊ Yeni bir sunucudur gelişmeye açık bir sunucudur. Sende aramıza katıl.\n' +
+  '╰━━━━━━━━━━━━━━━━━━━━━━╮\n' +
+  '╰───── ❥ https://discord.gg/XUDVj9R2wE\n' +
+  '╰───── ❥ https://cdn.discordapp.com/attachments/1524203614992863452/1524776756785975386/CC__Lelouch.jfif\n' +
+  '@everyone ♡! @here';
+
+if (!TOKEN) {
+  console.error('⛔ DISCORD_TOKEN bulunamadı! Ortam değişkenlerini kontrol et.');
+  process.exit(1);
+}
+
+function getPartnerMessage() {
+  return getConfigValue('partner_message') || DEFAULT_PARTNER_MESSAGE;
+}
+function getLogChannelId() {
+  return getConfigValue('log_channel_id') || DEFAULT_PARTNER_LOG_CHANNEL_ID;
+}
+
+// ──────────────────────────────────────────────────────────────
+//  DAVET LİNKİ TESPİTİ
+// ──────────────────────────────────────────────────────────────
+function extractInviteLink(content) {
+  const inviteRegex = /(https?:\/\/)?(www\.)?(discord\.gg\/[a-zA-Z0-9-]+|discord\.com\/invite\/[a-zA-Z0-9-]+)/i;
+  const match = content.match(inviteRegex);
+  return match ? match[0] : null;
+}
+function getTodayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
 function formatRemaining(ms) {
   const totalSeconds = Math.ceil(ms / 1000);
   const minutes = Math.floor(totalSeconds / 60);
@@ -158,18 +258,7 @@ function formatRemaining(ms) {
 }
 
 // ──────────────────────────────────────────────────────────────
-//  DAVET LİNKİ TESPİTİ
-// ──────────────────────────────────────────────────────────────
-// Mesaj içinde discord.gg veya discord.com/invite formatında bir link arar.
-// Bulunursa tam eşleşen linki, bulunamazsa null döner.
-function extractInviteLink(content) {
-  const inviteRegex = /(https?:\/\/)?(www\.)?(discord\.gg\/[a-zA-Z0-9-]+|discord\.com\/invite\/[a-zA-Z0-9-]+)/i;
-  const match = content.match(inviteRegex);
-  return match ? match[0] : null;
-}
-
-// ──────────────────────────────────────────────────────────────
-//  EXPRESS WEB SUNUCUSU (Render keepalive)
+//  EXPRESS WEB SUNUCUSU (keepalive)
 // ──────────────────────────────────────────────────────────────
 const app = express();
 app.get('/', (_req, res) => res.send('Bot Aktif'));
@@ -211,6 +300,10 @@ const commands = [
     )
     .addSubcommand((sub) => sub.setName('liste').setDescription('Kırmızı listedeki tüm kayıtları gösterir'))
     .toJSON(),
+  new SlashCommandBuilder()
+    .setName('setup')
+    .setDescription('Partner mesajını ve mesajların düşeceği kanalı ayarla (sadece yetkili rolü)')
+    .toJSON(),
 ];
 
 // ──────────────────────────────────────────────────────────────
@@ -242,24 +335,19 @@ client.on('messageCreate', async (message) => {
   try {
     if (message.author.bot) return;
 
-    // ── SUNUCU KANALI: "@Bot partner" komutu ──────────────────
+    // ── SUNUCU KANALI: partner tetikleyici kelime/ifade ───────
     if (message.guild) {
       if (message.channel.id !== PARTNER_COMMAND_CHANNEL_ID) return;
-
-      const isMentioned = message.mentions.has(client.user);
-      const containsPartnerWord = message.content.toLowerCase().includes('partner');
-      if (!isMentioned || !containsPartnerWord) return;
+      if (!messageMatchesPartnerTrigger(message.content)) return;
 
       const userId = message.author.id;
       const state = getPartnerState(userId);
 
-      // 1) Zaten bekleyen (henüz DM'den cevap vermediği) bir isteği varsa yenisini açma.
       if (state && state.pending) {
         await message.reply('⏳ Zaten aktif bir partner isteğiniz bulunuyor. Lütfen önce DM üzerinden partner mesajınızı gönderin.');
         return;
       }
 
-      // 2) Günlük limit kontrolü (SQLite'ta saklanır, bot yeniden başlasa bile sıfırlanmaz).
       const todayKey = getTodayKey();
       const dailyCount = getDailyRequestCount(userId, todayKey);
       if (dailyCount >= DAILY_PARTNER_LIMIT) {
@@ -267,7 +355,6 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // 3) 3 dakikalık cooldown kontrolü (mevcut özellik, korunuyor).
       const now = Date.now();
       const lastRequestAt = state?.lastRequestAt ? Number(state.lastRequestAt) : null;
       if (lastRequestAt && now - lastRequestAt < COOLDOWN_MS) {
@@ -276,12 +363,11 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // Tüm kontroller geçildi: isteği "bekleyen" olarak işaretle, cooldown'u güncelle ve günlük sayacı artır.
       setPartnerState(userId, true, String(now));
       incrementDailyRequestCount(userId, todayKey);
 
       try {
-        await message.author.send(PARTNER_MESSAGE);
+        await message.author.send(getPartnerMessage());
       } catch (dmError) {
         await message.reply('DM\'ni açmadan partner sistemini kullanamazsın.');
       }
@@ -293,13 +379,13 @@ client.on('messageCreate', async (message) => {
       const userId = message.author.id;
       const state = getPartnerState(userId);
 
-      // Bekleyen isteği yoksa (hiç @Bot partner yazmamış ya da hakkını zaten kullanmış) mesajı kabul etme.
       if (!state || !state.pending) {
-        await message.reply('ℹ️ Şu anda aktif bir partner isteğiniz yok. Yeni istek için sunucuda **@Bot partner** yazmalısınız.');
+        await message.reply(
+          'ℹ️ Şu anda aktif bir partner isteğiniz yok. Yeni istek için partner kanalında "partner" ile ilgili bir ifade yazmalısınız.'
+        );
         return;
       }
 
-      // Kullanıcının DM'den gönderebileceği tek mesaj budur — sonuç ne olursa olsun bekleyen istek kapanır.
       closePendingRequest(userId);
 
       const inviteLink = extractInviteLink(message.content);
@@ -314,9 +400,7 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      // Log kanalına, kullanıcının gönderdiği partner mesajını OLDUĞU GİBİ (verbatim) ilet.
-      // Embed veya ek alan kullanılmaz — mesaj tam olarak nasılsa öyle atılır.
-      const logChannel = await client.channels.fetch(PARTNER_LOG_CHANNEL_ID).catch(() => null);
+      const logChannel = await client.channels.fetch(getLogChannelId()).catch(() => null);
       if (logChannel) {
         await logChannel.send({
           content: message.content,
@@ -332,10 +416,63 @@ client.on('messageCreate', async (message) => {
 });
 
 // ──────────────────────────────────────────────────────────────
-//  SLASH KOMUT İŞLEYİCİSİ
+//  ETKİLEŞİM İŞLEYİCİSİ (slash komutlar, modal, seçim menüsü)
 // ──────────────────────────────────────────────────────────────
 client.on('interactionCreate', async (interaction) => {
   try {
+    if (interaction.isChatInputCommand() && interaction.commandName === 'setup') {
+      const hasRole = interaction.member?.roles?.cache?.has(SETUP_ROLE_ID);
+      if (!hasRole) {
+        await interaction.reply({ content: '⛔ Bu komutu kullanmak için gerekli role sahip değilsin.', ephemeral: true });
+        return;
+      }
+
+      const modal = new ModalBuilder().setCustomId('setup_partner_message_modal').setTitle('Partner Mesajını Ayarla');
+
+      const textInput = new TextInputBuilder()
+        .setCustomId('partner_message_input')
+        .setLabel('Partner mesajı (gif ve discord linki desteklenir)')
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true)
+        .setMaxLength(4000)
+        .setValue(getPartnerMessage().slice(0, 4000));
+
+      modal.addComponents(new ActionRowBuilder().addComponents(textInput));
+
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId === 'setup_partner_message_modal') {
+      const newMessage = interaction.fields.getTextInputValue('partner_message_input');
+      setConfigValue('partner_message', newMessage);
+
+      const channelSelect = new ChannelSelectMenuBuilder()
+        .setCustomId('setup_log_channel_select')
+        .setPlaceholder('Partner mesajlarının düşeceği kanalı seç')
+        .setChannelTypes([ChannelType.GuildText, ChannelType.GuildAnnouncement]);
+
+      const row = new ActionRowBuilder().addComponents(channelSelect);
+
+      await interaction.reply({
+        content: '✅ Partner mesajı kaydedildi. Şimdi partner mesajlarının hangi kanala düşeceğini seç:',
+        components: [row],
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (interaction.isChannelSelectMenu() && interaction.customId === 'setup_log_channel_select') {
+      const channelId = interaction.values[0];
+      setConfigValue('log_channel_id', channelId);
+
+      await interaction.update({
+        content: `✅ Kurulum tamamlandı! Partner mesajları artık <#${channelId}> kanalına düşecek.`,
+        components: [],
+      });
+      return;
+    }
+
     if (!interaction.isChatInputCommand()) return;
     if (interaction.commandName !== 'kirmiziliste') return;
 
