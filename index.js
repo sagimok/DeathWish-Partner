@@ -125,7 +125,7 @@ function setConfigValue(key, value) {
 // ══════════════════════════════════════════════════════════════
 // Sadece "partner yetkili" (veya buna çok benzer yazımlar) tetikler —
 // "partner" ya da "yetkili" tek başına yeterli değildir.
-const TRIGGER_PHRASES_RAW = ['partner yetkili'];
+const TRIGGER_PHRASES_RAW = ['partner yetkili', 'partner dm'];
 
 function normalize(str) {
   return str
