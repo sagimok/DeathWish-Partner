@@ -353,7 +353,7 @@ client.on('messageCreate', async (message) => {
 
     // ── SUNUCU KANALI: partner tetikleyici kelime/ifade ───────
     if (message.guild) {
-      if (message.channel.id !== PARTNER_COMMAND_CHANNEL_ID) return;
+      if (!PARTNER_COMMAND_CHANNEL_IDS.includes(message.channel.id)) return;
       if (!messageMatchesPartnerTrigger(message.content)) return;
 
       const userId = message.author.id;
