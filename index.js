@@ -24,6 +24,8 @@ const {
   ActionRowBuilder,
   ChannelSelectMenuBuilder,
   ChannelType,
+  ButtonBuilder,
+  ButtonStyle,
 } = require('discord.js');
 const express = require('express');
 
@@ -216,6 +218,10 @@ const SETUP_ROLE_ID = '1524107651510702160';
 const COOLDOWN_MS = 3 * 60 * 1000;
 const DAILY_PARTNER_LIMIT = 4;
 
+// Buton onayı bekleyen kullanıcılar: userId → { now, todayKey }
+// State ve sayaç YALNIZCA "Evet" butonuna basılınca yazılır.
+const pendingConfirmations = new Map();
+
 const DEFAULT_PARTNER_MESSAGE =
   '˚ ༘✶ Deathwish ϟ\n' +
   '╭━━━━━━━━━━━━━━━━━━━━━━╮\n' +
@@ -379,15 +385,25 @@ client.on('messageCreate', async (message) => {
         return;
       }
 
-      setPartnerState(userId, true, String(now));
-      incrementDailyRequestCount(userId, todayKey);
+      // State henüz yazılmıyor — kullanıcı önce onay butonuna basmalı
+      pendingConfirmations.set(userId, { now, todayKey });
 
-      try {
-        await message.author.send(getPartnerMessage());
-        await message.reply(`📩 ${message.author}, sana DM üzerinden partner mesajı gönderdim. Lütfen DM'lerini kontrol et ve davet linkini oradan gönder.`);
-      } catch (dmError) {
-        await message.reply('DM\'ni açmadan partner sistemini kullanamazsın.');
-      }
+      const yesBtn = new ButtonBuilder()
+        .setCustomId(`partner_yes:${userId}`)
+        .setLabel('✅ Evet')
+        .setStyle(ButtonStyle.Success);
+
+      const noBtn = new ButtonBuilder()
+        .setCustomId(`partner_no:${userId}`)
+        .setLabel('❌ Hayır')
+        .setStyle(ButtonStyle.Danger);
+
+      const row = new ActionRowBuilder().addComponents(yesBtn, noBtn);
+
+      await message.reply({
+        content: `👋 ${message.author}, partner işlemini **benimle** yapmak ister misin?`,
+        components: [row],
+      });
       return;
     }
 
@@ -489,6 +505,52 @@ client.on('interactionCreate', async (interaction) => {
         content: `✅ Kurulum tamamlandı! Partner mesajları artık <#${channelId}> kanalına düşecek.`,
         components: [],
       });
+      return;
+    }
+
+    // ── Partner onay butonları ────────────────────────────────
+    if (interaction.isButton()) {
+      const [action, ownerId] = interaction.customId.split(':');
+      if (action !== 'partner_yes' && action !== 'partner_no') return;
+
+      // Sadece butonu tetikleyen kullanıcı basabilir
+      if (interaction.user.id !== ownerId) {
+        await interaction.reply({ content: '⛔ Bu buton sana ait değil.', ephemeral: true });
+        return;
+      }
+
+      if (action === 'partner_no') {
+        pendingConfirmations.delete(ownerId);
+        await interaction.update({ content: '❌ Partner işlemi iptal edildi.', components: [] });
+        return;
+      }
+
+      // Evet — onay verildi
+      const pending = pendingConfirmations.get(ownerId);
+      if (!pending) {
+        await interaction.update({ content: '⚠️ Bu istek zaten işlendi veya süresi doldu.', components: [] });
+        return;
+      }
+      pendingConfirmations.delete(ownerId);
+
+      const { now, todayKey } = pending;
+      setPartnerState(ownerId, true, String(now));
+      incrementDailyRequestCount(ownerId, todayKey);
+
+      try {
+        const user = await interaction.client.users.fetch(ownerId);
+        await user.send(getPartnerMessage());
+        await interaction.update({
+          content: `📩 <@${ownerId}>, DM üzerinden partner mesajı gönderildi! Lütfen DM'lerini kontrol et ve davet linkini oradan gönder.`,
+          components: [],
+        });
+      } catch {
+        setPartnerState(ownerId, false, String(now));
+        await interaction.update({
+          content: `❌ <@${ownerId}> DM'lerin kapalı, partner sistemini kullanamazsın.`,
+          components: [],
+        });
+      }
       return;
     }
 
