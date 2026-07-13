@@ -223,14 +223,19 @@ const DAILY_PARTNER_LIMIT = 4;
 const pendingConfirmations = new Map();
 
 const DEFAULT_PARTNER_MESSAGE =
-  '˚ ༘✶ Deathwish ϟ\n' +
-  '╭━━━━━━━━━━━━━━━━━━━━━━╮\n' +
-  '✦ ˚⊹ ₊ Eğlenceli ve toxiclikten uzak bir sunucuyuz.\n' +
-  '✦ ˚⊹ ₊ Komik modlar ve aktif olmaya çalışan chat vardır.\n' +
-  '✦ ˚⊹ ₊ Yeni bir sunucudur gelişmeye açık bir sunucudur. Sende aramıza katıl.\n' +
-  '╰━━━━━━━━━━━━━━━━━━━━━━╮\n' +
-  '╰───── ❥ https://discord.gg/XUDVj9R2wE\n' +
-  '╰───── ❥ https://cdn.discordapp.com/attachments/1524203614992863452/1524776756785975386/CC__Lelouch.jfif\n' +
+  '✦˚ ༘✶ **Deathwish** ϟ\n\n' +
+  '╭───────────── ❥\n\n' +
+  '✦ ₊ **Kendimize ait özel bot sistemleri** ile farklı bir Discord deneyimi.\n\n' +
+  '✦ ₊ **Partner sistemi**, etkinlikler ve sürekli gelişen özellikler.\n\n' +
+  '✦ ₊ Aktif sohbet, eğlenceli üyeler ve saygılı bir ortam.\n\n' +
+  '✦ ₊ Sürekli güncellenen komutlar, görevler ve özel sistemler.\n\n' +
+  '✦ ₊ Toxiclikten uzak, kaliteli bir topluluk oluşturmayı hedefliyoruz.\n\n' +
+  '✦ ₊ Yeni açılmış ve her geçen gün büyüyen bir sunucu.\n\n' +
+  '> İlk üyelerden biri olup gelişimimize ortak ol!\n>\n' +
+  '╰───────────── ❥ **Aramıza Katıl!**\n\n' +
+  '・https://discord.gg/XUDVj9R2wE\n\n' +
+  '・https://cdn.discordapp.com/attachments/1524182887040159754/1526206005363609631/880b88af3f08dceced216e76a629b1e4.jpg?ex=6a562d9b&is=6a54dc1b&hm=b437ad289095f3e55ebb526c5390fdda5bb7f926e497f8ca78bef07c9670f19a&\n\n' +
+  '♡**Deathwish seni bekliyor.**\n' +
   '@everyone ♡! @here';
 
 if (!TOKEN) {
