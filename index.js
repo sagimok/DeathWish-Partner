@@ -234,7 +234,7 @@ const DEFAULT_PARTNER_MESSAGE =
   '> İlk üyelerden biri olup gelişimimize ortak ol!\n>\n' +
   '╰───────────── ❥ **Aramıza Katıl!**\n\n' +
   '・https://discord.gg/XUDVj9R2wE\n\n' +
-  '・https://cdn.discordapp.com/attachments/1524182887040159754/1526206005363609631/880b88af3f08dceced216e76a629b1e4.jpg?ex=6a562d9b&is=6a54dc1b&hm=b437ad289095f3e55ebb526c5390fdda5bb7f926e497f8ca78bef07c9670f19a&\n\n' +
+  '・https://cdn.discordapp.com/attachments/1525921244271345826/1526688439108501645/880b88af3f08dceced216e76a629b1e4.jpg?ex=6a57eee8&is=6a569d68&hm=d15dbff53ae43e11d9b76694586ec39ed03abc94d7702d35710def2fc2178a3b&\n\n' +
   '♡**Deathwish seni bekliyor.**\n' +
   '@everyone ♡! @here';
 
