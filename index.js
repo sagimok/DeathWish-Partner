@@ -308,6 +308,18 @@ const client = new Client({
 });
 
 // ──────────────────────────────────────────────────────────────
+//  CLIENT HATA / BAĞLANTI KOPMA DİNLEYİCİLERİ
+//  Bunlar olmadan gateway bağlantısı sessizce kopabilir: process
+//  (ve dolayısıyla Render'daki express sunucusu) ayakta kalmaya
+//  devam eder ama bot Discord'da "offline" görünür.
+// ──────────────────────────────────────────────────────────────
+client.on('error', (err) => console.error('⛔ Client error:', err));
+client.on('shardError', (err, shardId) => console.error(`⛔ Shard ${shardId} error:`, err));
+client.on('shardDisconnect', (event, shardId) => console.warn(`⚠️ Shard ${shardId} koptu (code: ${event?.code}).`));
+client.on('shardReconnecting', (shardId) => console.log(`🔄 Shard ${shardId} yeniden bağlanmayı deniyor...`));
+client.on('shardResume', (shardId) => console.log(`✅ Shard ${shardId} bağlantısı yeniden kuruldu.`));
+
+// ──────────────────────────────────────────────────────────────
 //  SLASH KOMUTLARI TANIMI
 // ──────────────────────────────────────────────────────────────
 const commands = [
@@ -529,16 +541,26 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
+      // Discord, butona basıldıktan sonra 3 saniye içinde bir yanıt (ack)
+      // bekler. Aşağıda DB işlemleri + kullanıcıya DM atma denemesi
+      // (network isteği) olduğu için bu süre kolayca aşılabilir ve
+      // interaction.update() "Unknown interaction" (10062) hatası
+      // fırlatabilir. Bunu önlemek için EN BAŞTA deferUpdate() ile
+      // hemen ack veriyoruz, geri kalan her şeyi editReply() ile
+      // güncelliyoruz (editReply'nin 3sn sınırı yoktur, 15 dakikaya
+      // kadar geçerlidir).
+      await interaction.deferUpdate();
+
       if (action === 'partner_no') {
         pendingConfirmations.delete(ownerId);
-        await interaction.update({ content: '❌ Partner işlemi iptal edildi.', components: [] });
+        await interaction.editReply({ content: '❌ Partner işlemi iptal edildi.', components: [] });
         return;
       }
 
       // Evet — onay verildi
       const pending = pendingConfirmations.get(ownerId);
       if (!pending) {
-        await interaction.update({ content: '⚠️ Bu istek zaten işlendi veya süresi doldu.', components: [] });
+        await interaction.editReply({ content: '⚠️ Bu istek zaten işlendi veya süresi doldu.', components: [] });
         return;
       }
       pendingConfirmations.delete(ownerId);
@@ -550,14 +572,17 @@ client.on('interactionCreate', async (interaction) => {
       try {
         const user = await interaction.client.users.fetch(ownerId);
         await user.send(getPartnerMessage());
-        await interaction.update({
+        await interaction.editReply({
           content: `📩 <@${ownerId}>, DM üzerinden partner mesajı gönderildi! Lütfen DM'lerini kontrol et ve davet linkini oradan gönder.`,
           components: [],
         });
       } catch {
+        // Kullanıcının DM'leri kapalıysa (ya da DM gönderimi başka bir
+        // sebeple başarısız olursa) buraya düşer: state geri alınır ve
+        // kullanıcıya DM'lerinin kapalı olduğu açıkça söylenir.
         setPartnerState(ownerId, false, String(now));
-        await interaction.update({
-          content: `❌ <@${ownerId}> DM'lerin kapalı, partner sistemini kullanamazsın.`,
+        await interaction.editReply({
+          content: `❌ <@${ownerId}>, DM'lerin kapalı olduğu için partner mesajı gönderilemedi. Lütfen sunucu ayarlarından bu sunucudan gelen DM'lere izin ver ve tekrar dene.`,
           components: [],
         });
       }
@@ -632,6 +657,19 @@ process.on('unhandledRejection', (reason) => {
 process.on('uncaughtException', (err) => {
   console.error('⛔ UncaughtException:', err);
 });
+
+// ──────────────────────────────────────────────────────────────
+//  WATCHDOG — client.isReady() false ise process'i sonlandırır.
+//  Render, process çöktüğünde otomatik olarak yeniden başlatır.
+//  Bu sayede "process yaşıyor ama Discord'a bağlı değil" (Render'da
+//  live, Discord'da offline) durumu kalıcı hale gelmez.
+// ──────────────────────────────────────────────────────────────
+setInterval(() => {
+  if (!client.isReady()) {
+    console.error('⛔ Client Discord\'a bağlı değil, process yeniden başlatılmak üzere sonlandırılıyor.');
+    process.exit(1);
+  }
+}, 60_000);
 
 // ──────────────────────────────────────────────────────────────
 //  BOT GİRİŞİ
