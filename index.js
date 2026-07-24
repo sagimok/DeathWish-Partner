@@ -1251,21 +1251,38 @@ const commands = [
     .addSubcommand((s) => s.setName('liste').setDescription('Kırmızı listeyi gösterir.'))
     .toJSON(),
   new SlashCommandBuilder()
-    .setName('github')
-    .setDescription('Guild bazlı şifreli GitHub backup sistemi.')
-    .addSubcommand((s) => s.setName('sifre-olustur').setDescription('Bu sunucu için tek seferlik backup şifresi oluşturur.'))
-    .addSubcommand((s) => s.setName('backup-olustur').setDescription('Bu sunucunun şifreli backup dosyasını oluşturur.'))
-    .addSubcommand((s) => s.setName('backup-listele').setDescription('Bu sunucunun backup dosyalarını listeler.'))
-    .addSubcommand((s) => s.setName('backup-geri-yukle').setDescription('Bir backup dosyasını şifre ile geri yükler.'))
-    .addSubcommand((s) => s.setName('kilitleri-goster').setDescription('Bot sahibinin kilitli backup sistemlerini gösterir.'))
-    .addSubcommand((s) =>
-      s
-        .setName('kilit-ac')
-        .setDescription('Bot sahibinin seçtiği guild backup kilidini açar.')
-        .addStringOption((o) => o.setName('guildid').setDescription('Guild ID').setRequired(true)),
-    )
+    .setName('sifre-olustur')
+    .setDescription('Bu sunucu için tek seferlik backup şifresi oluşturur.')
     .toJSON(),
-  new SlashCommandBuilder().setName('sifreleri-goster').setDescription('Yalnızca bot sahibine gerçek backup şifrelerini gösterir.').toJSON(),
+  new SlashCommandBuilder()
+    .setName('backup-olustur')
+    .setDescription('Bu sunucunun şifreli backup dosyasını oluşturur.')
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('backup-geri-yukle')
+    .setDescription('Bir backup dosyasını şifre ile geri yükler.')
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('backup-listele')
+    .setDescription('Bot sahibine özel: bu sunucunun backup dosyalarını listeler.')
+    .setDefaultMemberPermissions('0')
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('kilitleri-goster')
+    .setDescription('Bot sahibine özel: kilitli backup sistemlerini gösterir.')
+    .setDefaultMemberPermissions('0')
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('kilit-ac')
+    .setDescription('Bot sahibine özel: bir guild backup kilidini açar.')
+    .addStringOption((o) => o.setName('guildid').setDescription('Guild ID').setRequired(true))
+    .setDefaultMemberPermissions('0')
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('sifreleri-goster')
+    .setDescription('Yalnızca bot sahibine gerçek backup şifrelerini gösterir.')
+    .setDefaultMemberPermissions('0')
+    .toJSON(),
 ];
 
 const app = express();
@@ -1279,7 +1296,31 @@ const client = new Client({
 
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(TOKEN);
-  await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+  const registeredCommands = await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+  const ownerOnlyNames = new Set([
+    'backup-listele',
+    'kilitleri-goster',
+    'kilit-ac',
+    'sifreleri-goster',
+  ]);
+
+  // Add a user-specific allow rule for the bot owner in every guild. The
+  // default "0" permission keeps these commands out of normal users'
+  // command menus. Some guilds may reject a user override when the owner is
+  // not a member; runtime checks below still keep those commands protected.
+  for (const guild of client.guilds.cache.values()) {
+    for (const command of registeredCommands.filter((item) => ownerOnlyNames.has(item.name))) {
+      try {
+        await rest.put(Routes.applicationCommandPermissions(client.user.id, guild.id, command.id), {
+          body: {
+            permissions: [{ id: BOT_OWNER_ID, type: 1, permission: true }],
+          },
+        });
+      } catch (error) {
+        console.error(`Bot sahibi için ${command.name} komut izni ${guild.id} sunucusunda ayarlanamadı:`, error);
+      }
+    }
+  }
 }
 
 function requireGuild(interaction) {
@@ -1292,6 +1333,10 @@ async function handleSetupInteraction(interaction) {
   const guild = requireGuild(interaction);
   if (!hasPermission(guild, interaction.user.id, 'SETUP_MANAGE')) {
     await interaction.reply({ content: '⛔ Bu kurulumu yalnızca sunucu sahibi, bot sahibi veya yetkili yönetebilir.', ephemeral: true });
+    return true;
+  }
+  if (interaction.isChatInputCommand() && interaction.commandName === 'setup') {
+    await showSetupPanel(interaction);
     return true;
   }
   if (interaction.isButton()) {
@@ -1384,39 +1429,13 @@ async function handleSetupInteraction(interaction) {
   return false;
 }
 
-async function handleGithubCommand(interaction) {
-  const sub = interaction.options.getSubcommand();
-  if (sub === 'kilitleri-goster') {
-    if (!isBotOwner(interaction.user.id)) {
-      await interaction.reply({ content: '⛔ Bu komut yalnızca bot sahibine açıktır.', ephemeral: true });
-      return;
-    }
-    const locked = db.prepare('SELECT guildId, guildName, failedAttempts FROM github_backup_settings WHERE backupLocked = 1').all();
-    await interaction.reply({
-      content: locked.length
-        ? `🔒 Kilitli backup sistemleri:\n${locked.map((r) => `• ${r.guildName} — ${r.guildId} (${r.failedAttempts}/10)`).join('\n')}`
-        : '✅ Kilitli backup sistemi yok.',
-      ephemeral: true,
-    });
-    return;
-  }
-  if (sub === 'kilit-ac') {
-    if (!isBotOwner(interaction.user.id)) {
-      await interaction.reply({ content: '⛔ Bu komut yalnızca bot sahibine açıktır.', ephemeral: true });
-      return;
-    }
-    const guildId = interaction.options.getString('guildid', true);
-    const result = db.prepare('UPDATE github_backup_settings SET failedAttempts = 0, backupLocked = 0 WHERE guildId = ?').run(guildId);
-    await interaction.reply({ content: result.changes ? `✅ ${guildId} backup kilidi açıldı.` : '⚠️ Guild bulunamadı.', ephemeral: true });
-    return;
-  }
-
+async function handleBackupCommand(interaction) {
   const guild = requireGuild(interaction);
   if (!hasPermission(guild, interaction.user.id, 'GITHUB_BACKUP_MANAGE')) {
     await interaction.reply({ content: '⛔ GitHub backup yetkin yok.', ephemeral: true });
     return;
   }
-  if (sub === 'sifre-olustur') {
+  if (interaction.commandName === 'sifre-olustur') {
     const settings = getBackupSettings(guild);
     if (settings.encryptedPassword) {
       await interaction.reply({ content: '❌ Bu sunucu için backup şifresi zaten oluşturuldu. Güvenlik nedeniyle yeniden gösterilemez.', ephemeral: true });
@@ -1433,21 +1452,13 @@ async function handleGithubCommand(interaction) {
     });
     return;
   }
-  if (sub === 'backup-olustur') {
+  if (interaction.commandName === 'backup-olustur') {
     await interaction.deferReply({ ephemeral: true });
     const result = await createGuildBackup(guild);
     await interaction.editReply(`✅ Yalnızca **${guild.name}** verilerini içeren şifreli backup GitHub Repo 2'ye kaydedildi.\nDosya: \`${result.filePath}\``);
     return;
   }
-  if (sub === 'backup-listele') {
-    await interaction.deferReply({ ephemeral: true });
-    const entries = await listGuildBackups(guild);
-    await interaction.editReply(
-      entries.length ? `📁 **${guild.name}** backup dosyaları:\n${entries.map((e) => `• \`${e.name}\``).join('\n')}` : 'ℹ️ Bu sunucu için backup bulunamadı.',
-    );
-    return;
-  }
-  if (sub === 'backup-geri-yukle') {
+  if (interaction.commandName === 'backup-geri-yukle') {
     ensureBackupUnlocked(guild);
     const modal = new ModalBuilder().setCustomId(`restore_backup_modal:${guild.id}:${interaction.user.id}`).setTitle('Backup Geri Yükle');
     const file = new TextInputBuilder()
@@ -1466,6 +1477,48 @@ async function handleGithubCommand(interaction) {
     modal.addComponents(new ActionRowBuilder().addComponents(file), new ActionRowBuilder().addComponents(password));
     await interaction.showModal(modal);
   }
+}
+
+async function handleOwnerOnlyBackupList(interaction) {
+  if (!isBotOwner(interaction.user.id)) {
+    await interaction.reply({ content: '⛔ Bu komut yalnızca bot sahibine açıktır.', ephemeral: true });
+    return;
+  }
+  const guild = requireGuild(interaction);
+  await interaction.deferReply({ ephemeral: true });
+  const entries = await listGuildBackups(guild);
+  await interaction.editReply(
+    entries.length
+      ? `📁 **${guild.name}** backup dosyaları:\n${entries.map((entry) => `• \`${entry.name}\``).join('\n')}`
+      : 'ℹ️ Bu sunucu için backup bulunamadı.',
+  );
+}
+
+async function handleOwnerOnlyLockedList(interaction) {
+  if (!isBotOwner(interaction.user.id)) {
+    await interaction.reply({ content: '⛔ Bu komut yalnızca bot sahibine açıktır.', ephemeral: true });
+    return;
+  }
+  const locked = db.prepare('SELECT guildId, guildName, failedAttempts FROM github_backup_settings WHERE backupLocked = 1').all();
+  await interaction.reply({
+    content: locked.length
+      ? `🔒 Kilitli backup sistemleri:\n${locked.map((row) => `• ${row.guildName} — ${row.guildId} (${row.failedAttempts}/10)`).join('\n')}`
+      : '✅ Kilitli backup sistemi yok.',
+    ephemeral: true,
+  });
+}
+
+async function handleOwnerOnlyUnlock(interaction) {
+  if (!isBotOwner(interaction.user.id)) {
+    await interaction.reply({ content: '⛔ Bu komut yalnızca bot sahibine açıktır.', ephemeral: true });
+    return;
+  }
+  const guildId = interaction.options.getString('guildid', true);
+  const result = db.prepare('UPDATE github_backup_settings SET failedAttempts = 0, backupLocked = 0 WHERE guildId = ?').run(guildId);
+  await interaction.reply({
+    content: result.changes ? `✅ ${guildId} backup kilidi açıldı.` : '⚠️ Guild bulunamadı.',
+    ephemeral: true,
+  });
 }
 
 async function handleInteraction(interaction) {
@@ -1550,9 +1603,40 @@ async function handleInteraction(interaction) {
     return;
   }
   if (!interaction.isChatInputCommand()) return;
-  if (interaction.commandName === 'github') {
+  if (interaction.commandName === 'backup-listele') {
     try {
-      await handleGithubCommand(interaction);
+      await handleOwnerOnlyBackupList(interaction);
+    } catch (error) {
+      if (interaction.deferred || interaction.replied) await interaction.editReply(`❌ ${error.message}`).catch(() => null);
+      else await interaction.reply({ content: `❌ ${error.message}`, ephemeral: true }).catch(() => null);
+    }
+    return;
+  }
+  if (interaction.commandName === 'kilitleri-goster') {
+    try {
+      await handleOwnerOnlyLockedList(interaction);
+    } catch (error) {
+      if (interaction.deferred || interaction.replied) await interaction.editReply(`❌ ${error.message}`).catch(() => null);
+      else await interaction.reply({ content: `❌ ${error.message}`, ephemeral: true }).catch(() => null);
+    }
+    return;
+  }
+  if (interaction.commandName === 'kilit-ac') {
+    try {
+      await handleOwnerOnlyUnlock(interaction);
+    } catch (error) {
+      if (interaction.deferred || interaction.replied) await interaction.editReply(`❌ ${error.message}`).catch(() => null);
+      else await interaction.reply({ content: `❌ ${error.message}`, ephemeral: true }).catch(() => null);
+    }
+    return;
+  }
+  if (
+    interaction.commandName === 'sifre-olustur' ||
+    interaction.commandName === 'backup-olustur' ||
+    interaction.commandName === 'backup-geri-yukle'
+  ) {
+    try {
+      await handleBackupCommand(interaction);
     } catch (error) {
       if (interaction.deferred || interaction.replied) await interaction.editReply(`❌ ${error.message}`).catch(() => null);
       else await interaction.reply({ content: `❌ ${error.message}`, ephemeral: true }).catch(() => null);
